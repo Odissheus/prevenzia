@@ -12,8 +12,46 @@ import os
 import json
 import re
 
-async def run_screening_agent(regione: str, comune: str, screening_list: list) -> list:
+def get_available_screenings(eta: int, sesso: str) -> list:
+    """Determina quali screening sono disponibili in base a età e sesso"""
+    screenings = []
+    
+    # Mammografia
+    if sesso == 'F' and 50 <= eta <= 69:
+        screenings.append({
+            'tipo_screening': 'Mammografia',
+            'descrizione': 'Screening tumore della mammella'
+        })
+    
+    # Pap-test
+    if sesso == 'F' and 25 <= eta <= 64:
+        screenings.append({
+            'tipo_screening': 'Pap-test',
+            'descrizione': 'Screening tumore del collo dell\'utero'
+        })
+    
+    # Colon-retto
+    if 50 <= eta <= 74:
+        screenings.append({
+            'tipo_screening': 'Test sangue occulto fecale',
+            'descrizione': 'Screening tumore del colon-retto'
+        })
+    
+    return screenings
+
+async def run_screening_agent(eta: int, sesso: str, regione: str, comune: str) -> list:
     """Esegue l'agente AI per trovare link di prenotazione screening."""
+    
+    print(f"🤖 Avvio agente per: {eta} anni, {sesso}, {comune}, {regione}")
+    
+    # Determina screening disponibili
+    screening_list = get_available_screenings(eta, sesso)
+    
+    if not screening_list:
+        print("⚠️ Nessuno screening disponibile per questi parametri")
+        return []
+    
+    print(f"📋 Screening da cercare: {[s['tipo_screening'] for s in screening_list]}")
     
     # Inizializza Claude
     llm = ChatAnthropic(
@@ -32,6 +70,8 @@ async def run_screening_agent(regione: str, comune: str, screening_list: list) -
     # Crea prompt
     screening_names = ", ".join([s['tipo_screening'] for s in screening_list])
     user_input = create_agent_prompt(screening_names, regione, comune)
+    
+    print(f"📝 Prompt creato: {user_input[:200]}...")
     
     prompt = ChatPromptTemplate.from_messages([
         ("system", AGENT_SYSTEM_PROMPT),
@@ -61,14 +101,21 @@ async def run_screening_agent(regione: str, comune: str, screening_list: list) -
     
     # Esegui agente
     try:
+        print("🔍 Esecuzione agente in corso...")
         result = await agent_executor.ainvoke({"input": user_input})
         output_text = result.get('output', '')
         
+        print(f"✅ Agente completato. Output: {output_text[:200]}...")
+        
         links = extract_json_from_output(output_text)
+        print(f"🔗 Link estratti: {len(links)}")
+        
         return links
         
     except Exception as e:
-        print(f"Errore agente: {str(e)}")
+        print(f"❌ Errore agente: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return []
 
 def extract_json_from_output(text: str) -> list:
@@ -85,4 +132,5 @@ def extract_json_from_output(text: str) -> list:
         return []
         
     except json.JSONDecodeError:
+        print("⚠️ Errore parsing JSON dalla risposta")
         return []

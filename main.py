@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 import os
 from agent.orchestrator import run_screening_agent
-from db.models import get_local_screening, check_cache, save_to_cache
 
 load_dotenv()
 
@@ -13,7 +12,7 @@ app = FastAPI(title="Prevenzia Agent API")
 # CORS per permettere chiamate da prevenzia.eu
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://prevenzia.eu", "http://localhost"],
+    allow_origins=["https://prevenzia.eu", "http://localhost", "https://www.prevenzia.eu"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -32,58 +31,29 @@ async def root():
 @app.post("/api/search_screening")
 async def search_screening(req: SearchRequest):
     try:
-        # 1. Query DB locale per screening disponibili
-        screening = await get_local_screening(req.eta, req.sesso, req.regione)
+        print(f"📥 Ricevuta richiesta: {req.eta} anni, {req.sesso}, {req.comune}, {req.regione}")
         
-        if not screening:
-            return {
-                "success": True,
-                "data": {
-                    "screening": [],
-                    "links_asl": [],
-                    "fonte": "database"
-                },
-                "message": "Nessuno screening disponibile per questi parametri"
-            }
-        
-        # 2. Check cache
-        cached_links = await check_cache(req.regione, req.comune, screening)
-        
-        if cached_links:
-            return {
-                "success": True,
-                "data": {
-                    "screening": screening,
-                    "links_asl": cached_links,
-                    "fonte": "cache",
-                    "ai_attivo": True
-                },
-                "message": "Risultati da cache"
-            }
-        
-        # 3. Nessun cache → avvia agente AI
+        # Chiama DIRETTAMENTE l'agente AI
         links = await run_screening_agent(
+            eta=req.eta,
+            sesso=req.sesso,
             regione=req.regione,
-            comune=req.comune,
-            screening_list=screening
+            comune=req.comune
         )
         
-        # 4. Salva in cache
-        if links:
-            await save_to_cache(req.regione, req.comune, links)
+        print(f"✅ Agente ha trovato {len(links) if links else 0} link")
         
         return {
             "success": True,
             "data": {
-                "screening": screening,
-                "links_asl": links,
-                "fonte": "agent_ai",
-                "ai_attivo": len(links) > 0
+                "links_asl": links if links else [],
+                "fonte": "agent_ai"
             },
             "message": "Ricerca completata"
         }
     
     except Exception as e:
+        print(f"❌ Errore: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
