@@ -1,12 +1,7 @@
 from langchain_anthropic import ChatAnthropic
-from langchain.agents import AgentExecutor
-from langchain.agents.format_scratchpad import format_to_openai_function_messages
-from langchain.agents.output_parsers import OpenAIFunctionsAgentOutputParser
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.utils.function_calling import convert_to_openai_function
-from agent.tools.brave_search import brave_search
-from agent.tools.web_scraper import scrape_page
-from agent.tools.link_validator import validate_link
+from langchain.prompts import ChatPromptTemplate
+from agent.tools.brave_search import brave_search_tool
+from agent.tools.web_scraper import scrape_page_tool
 from agent.prompts import AGENT_SYSTEM_PROMPT, create_agent_prompt
 import os
 import json
@@ -16,26 +11,14 @@ def get_available_screenings(eta: int, sesso: str) -> list:
     """Determina quali screening sono disponibili in base a età e sesso"""
     screenings = []
     
-    # Mammografia
     if sesso == 'F' and 50 <= eta <= 69:
-        screenings.append({
-            'tipo_screening': 'Mammografia',
-            'descrizione': 'Screening tumore della mammella'
-        })
+        screenings.append({'tipo_screening': 'Mammografia', 'descrizione': 'Screening tumore della mammella'})
     
-    # Pap-test
     if sesso == 'F' and 25 <= eta <= 64:
-        screenings.append({
-            'tipo_screening': 'Pap-test',
-            'descrizione': 'Screening tumore del collo dell\'utero'
-        })
+        screenings.append({'tipo_screening': 'Pap-test', 'descrizione': 'Screening tumore del collo dell\'utero'})
     
-    # Colon-retto
     if 50 <= eta <= 74:
-        screenings.append({
-            'tipo_screening': 'Test sangue occulto fecale',
-            'descrizione': 'Screening tumore del colon-retto'
-        })
+        screenings.append({'tipo_screening': 'Test sangue occulto fecale', 'descrizione': 'Screening tumore del colon-retto'})
     
     return screenings
 
@@ -44,16 +27,15 @@ async def run_screening_agent(eta: int, sesso: str, regione: str, comune: str) -
     
     print(f"🤖 Avvio agente per: {eta} anni, {sesso}, {comune}, {regione}")
     
-    # Determina screening disponibili
     screening_list = get_available_screenings(eta, sesso)
     
     if not screening_list:
-        print("⚠️ Nessuno screening disponibile per questi parametri")
+        print("⚠️ Nessuno screening disponibile")
         return []
     
     print(f"📋 Screening da cercare: {[s['tipo_screening'] for s in screening_list]}")
     
-    # Inizializza Claude
+    # Inizializza Claude con tools
     llm = ChatAnthropic(
         model="claude-sonnet-4-5-20250929",
         temperature=0.2,
@@ -61,51 +43,47 @@ async def run_screening_agent(eta: int, sesso: str, regione: str, comune: str) -
         anthropic_api_key=os.getenv("CLAUDE_API_KEY")
     )
     
-    # Tools disponibili
-    tools = [brave_search, scrape_page, validate_link]
-    
-    # Converti tools in formato OpenAI
-    llm_with_tools = llm.bind(functions=[convert_to_openai_function(t) for t in tools])
-    
-    # Crea prompt
+    # Crea prompt dettagliato
     screening_names = ", ".join([s['tipo_screening'] for s in screening_list])
-    user_input = create_agent_prompt(screening_names, regione, comune)
     
-    print(f"📝 Prompt creato: {user_input[:200]}...")
+    prompt_text = f"""Sei un assistente esperto nel trovare link di prenotazione per screening oncologici del Sistema Sanitario Nazionale italiano.
+
+TASK: Trova i link UFFICIALI e DIRETTI per prenotare i seguenti screening:
+- Screening: {screening_names}
+- Regione: {regione}
+- Comune: {comune}
+
+ISTRUZIONI:
+1. Cerca su Google/Brave i portali ufficiali della Regione {regione} per screening oncologici
+2. Cerca il sito dell'ASL di {comune}
+3. Cerca "CUP online {regione}" per trovare il Centro Unico Prenotazioni
+4. Cerca "prenotazione screening {screening_names} {comune}"
+
+RISPOSTA RICHIESTA in formato JSON:
+{{
+  "links": [
+    {{
+      "tipo_screening": "nome screening",
+      "url": "https://...",
+      "nome_ente": "Nome ASL o ente",
+      "note": "Breve descrizione"
+    }}
+  ]
+}}
+
+IMPORTANTE: 
+- Includi SOLO link a siti ufficiali (.gov.it, ASL, Regioni)
+- NON inventare link
+- Se non trovi link validi, restituisci array vuoto
+"""
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", AGENT_SYSTEM_PROMPT),
-        ("human", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad")
-    ])
-    
-    # Crea agent chain
-    agent = (
-        {
-            "input": lambda x: x["input"],
-            "agent_scratchpad": lambda x: format_to_openai_function_messages(x["intermediate_steps"])
-        }
-        | prompt
-        | llm_with_tools
-        | OpenAIFunctionsAgentOutputParser()
-    )
-    
-    # Executor
-    agent_executor = AgentExecutor(
-        agent=agent,
-        tools=tools,
-        verbose=True,
-        max_iterations=15,
-        handle_parsing_errors=True
-    )
-    
-    # Esegui agente
     try:
-        print("🔍 Esecuzione agente in corso...")
-        result = await agent_executor.ainvoke({"input": user_input})
-        output_text = result.get('output', '')
+        print("🔍 Invio richiesta a Claude...")
         
-        print(f"✅ Agente completato. Output: {output_text[:200]}...")
+        response = await llm.ainvoke(prompt_text)
+        output_text = response.content
+        
+        print(f"✅ Risposta ricevuta: {output_text[:300]}...")
         
         links = extract_json_from_output(output_text)
         print(f"🔗 Link estratti: {len(links)}")
@@ -120,7 +98,6 @@ async def run_screening_agent(eta: int, sesso: str, regione: str, comune: str) -
 
 def extract_json_from_output(text: str) -> list:
     """Estrae array di link da risposta Claude"""
-    
     try:
         json_match = re.search(r'\{[\s\S]*"links"[\s\S]*\}', text)
         
@@ -131,6 +108,6 @@ def extract_json_from_output(text: str) -> list:
         
         return []
         
-    except json.JSONDecodeError:
-        print("⚠️ Errore parsing JSON dalla risposta")
+    except Exception as e:
+        print(f"⚠️ Errore parsing JSON: {str(e)}")
         return []
