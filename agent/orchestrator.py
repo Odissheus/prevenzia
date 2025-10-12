@@ -1,8 +1,4 @@
 from langchain_anthropic import ChatAnthropic
-from langchain.prompts import ChatPromptTemplate
-from agent.tools.brave_search import brave_search_tool
-from agent.tools.web_scraper import scrape_page_tool
-from agent.prompts import AGENT_SYSTEM_PROMPT, create_agent_prompt
 import os
 import json
 import re
@@ -35,7 +31,7 @@ async def run_screening_agent(eta: int, sesso: str, regione: str, comune: str) -
     
     print(f"📋 Screening da cercare: {[s['tipo_screening'] for s in screening_list]}")
     
-    # Inizializza Claude con tools
+    # Inizializza Claude
     llm = ChatAnthropic(
         model="claude-sonnet-4-5-20250929",
         temperature=0.2,
@@ -53,11 +49,11 @@ TASK: Trova i link UFFICIALI e DIRETTI per prenotare i seguenti screening:
 - Regione: {regione}
 - Comune: {comune}
 
-ISTRUZIONI:
-1. Cerca su Google/Brave i portali ufficiali della Regione {regione} per screening oncologici
-2. Cerca il sito dell'ASL di {comune}
-3. Cerca "CUP online {regione}" per trovare il Centro Unico Prenotazioni
-4. Cerca "prenotazione screening {screening_names} {comune}"
+Cerca su internet i seguenti siti:
+1. Portale ufficiale della Regione {regione} per screening oncologici
+2. Sito dell'ASL di {comune}
+3. CUP online {regione} (Centro Unico Prenotazioni)
+4. Portali di prenotazione screening {screening_names} {comune}
 
 RISPOSTA RICHIESTA in formato JSON:
 {{
@@ -72,16 +68,17 @@ RISPOSTA RICHIESTA in formato JSON:
 }}
 
 IMPORTANTE: 
-- Includi SOLO link a siti ufficiali (.gov.it, ASL, Regioni)
+- Includi SOLO link a siti ufficiali (.gov.it, ASL, Regioni, sanita.regione.it)
 - NON inventare link
-- Se non trovi link validi, restituisci array vuoto
+- Se non trovi link validi, restituisci {{"links": []}}
+- Restituisci SOLO il JSON, nessun altro testo
 """
     
     try:
         print("🔍 Invio richiesta a Claude...")
         
         response = await llm.ainvoke(prompt_text)
-        output_text = response.content
+        output_text = response.content if hasattr(response, 'content') else str(response)
         
         print(f"✅ Risposta ricevuta: {output_text[:300]}...")
         
@@ -99,7 +96,8 @@ IMPORTANTE:
 def extract_json_from_output(text: str) -> list:
     """Estrae array di link da risposta Claude"""
     try:
-        json_match = re.search(r'\{[\s\S]*"links"[\s\S]*\}', text)
+        # Cerca pattern JSON
+        json_match = re.search(r'\{[\s\S]*?"links"[\s\S]*?\}', text)
         
         if json_match:
             json_str = json_match.group(0)
